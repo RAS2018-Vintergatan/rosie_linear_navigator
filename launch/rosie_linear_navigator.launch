@@ -1,0 +1,6 @@
+<launch>
+
+	<!-- run the dead reckoning node -->
+	<node pkg="rosie_linear_navigator" type="rosie_linear_navigator" name="rosie_linear_navigator"/>
+	
+</launch>
