@@ -141,19 +141,19 @@ geometry_msgs::Twist calculateTwist(const nav_msgs::Odometry& currentOdom, const
 	float deltaAnglePose = capAngle(yaw_t-yaw);
 	
 	if(distance > 0.10){
-		float velByDistance = std::min(std::max((pow(distance,2))*20,0.08),0.15);
-		if(std::abs(deltaAnglePosition)>0.1f){
-			twistOut.angular.z = -std::min(std::max(deltaAnglePosition,-0.3f),0.3f);
+		float velByDistance = std::min(std::max(distance*5,0.03f),0.06f);
+		if(std::abs(deltaAnglePosition)>1.2f){
+			twistOut.angular.z = -std::min(std::max(deltaAnglePosition*0.5f,-0.3f),0.3f);
 			twistOut.linear.x = 0.0f;
 		}else{
-			twistOut.angular.z = -std::min(std::max(deltaAnglePosition*0.1f,-0.3f),0.3f);
-			twistOut.linear.x = std::min(velByDistance*std::max(pow(cos(deltaAnglePosition),2),0.0),0.1);
+			twistOut.angular.z = -std::min(std::max(deltaAnglePosition*0.5f,-0.3f),0.3f);
+			twistOut.linear.x = velByDistance*std::min(std::max(cos(deltaAnglePosition),0.0),1.0);
 		}
 		//ROS_INFO("GO TO POSITION:");
 	}else{
 		twistOut.linear.x = 0.0;
 		if(std::abs(deltaAnglePose)>0.08f){
-			twistOut.angular.z = std::min(std::max(deltaAnglePose*0.7f,-0.3f),0.3f);
+			twistOut.angular.z = std::min(std::max(deltaAnglePose*0.5f,-0.3f),0.3f);
 		}else{
 			twistOut.angular.z = 0.0f;
 		}
@@ -168,8 +168,11 @@ geometry_msgs::Twist calculateTwist(const nav_msgs::Odometry& currentOdom, const
 char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud lastPointCloud, nav_msgs::Odometry lastOdom){
 	//ROS_INFO("LinearX: %f,LinearY: %f,LinearZ: %f,AngularX: %f,AngularY: %f,AngularZ: %f",
 	//		 signal.linear.x,signal.linear.y,signal.linear.z,signal.angular.x,signal.angular.y,signal.angular.z);
-	if(!gotPointCloud)
-		return 1;
+
+	if(!gotPointCloud){
+		return 0;
+	}
+
 	float angleWidth = std::max(1.0 + abs(lastOdom.twist.twist.angular.z),1.5);
 
 	tf::Quaternion poseQuaternion = tf::Quaternion(lastOdom.pose.pose.orientation.x,
@@ -204,7 +207,7 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 		float distance = sqrt(pow(point_tf.x(),2)+pow(point_tf.y(),2));
 
 		if(angleFromBase < angleWidth && angleFromBase > -angleWidth){
-				if(distance < 0.35*std::abs(std::cos(angleFromBase))){
+				if(distance < 0.20){//*std::abs(std::cos(angleFromBase))){
 					ROS_INFO("Angle: %f",angleFromBase);
 					return 1;
 				}
