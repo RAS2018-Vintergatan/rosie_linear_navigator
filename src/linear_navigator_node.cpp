@@ -14,7 +14,13 @@ char gotOdom = 0;
 char gotTarget = 0;
 char gotPointCloud = 0;
 
+geometry_msgs::Twist last_signal;
 ros::Publisher motorSignal_pub;
+
+char collisionCourseDetected = 1;
+char isInside = 0;
+
+char checkCollisionCourse(geometry_msgs::Twist, sensor_msgs::PointCloud, nav_msgs::Odometry);
 
 /*
 geometry_msgs/Vector3 linear
@@ -34,12 +40,22 @@ void sendMotorSignal(geometry_msgs::Twist& msg){
 	}
 	lastMotorLinearVelocitySignal = msg.linear.x;
 	lastMotorAngularVelocitySignal = msg.angular.z;
+
+	last_signal = msg;
 }
 
 void obstacleDisntacesCallback(const sensor_msgs::PointCloud& msg){
 	if(msg.header.seq > lastPointCloud.header.seq){
 		lastPointCloud = msg;
 		gotPointCloud = 1;
+	}	
+
+	collisionCourseDetected = checkCollisionCourse(last_signal, lastPointCloud, lastOdom);
+	if(collisionCourseDetected){
+		geometry_msgs::Twist signal;
+		signal.linear.x = 0;
+		signal.angular.z = 0;
+		sendMotorSignal(signal);
 	}
 }
 
@@ -84,6 +100,7 @@ void currentPoseCallback(const nav_msgs::Odometry& msg){
 void targetPoseCallback(const geometry_msgs::PoseStamped& msg){
 	targetPose = msg;
 	gotTarget = 1;
+	isInside = 0;
 }
 
 float capAngle(const float& angleIn){
@@ -113,6 +130,7 @@ geometry_msgs::Twist calculateTwist(const nav_msgs::Odometry& currentOdom, const
 		listener.lookupTransform("world", targetPose.header.frame_id, ros::Time(0), transformTarget);
 	}catch(tf::TransformException ex){
 		ROS_ERROR("%s",ex.what());
+		return twistOut;
 	}
 	
 	//ROS_INFO("targetX:%f,targetY:%f",transformTarget.getOrigin().x(),transformTarget.getOrigin().y());
@@ -140,20 +158,24 @@ geometry_msgs::Twist calculateTwist(const nav_msgs::Odometry& currentOdom, const
 	float deltaAnglePosition = capAngle(yaw - atan2(deltaY, deltaX));
 	float deltaAnglePose = capAngle(yaw_t-yaw);
 	
-	if(distance > 0.10){
-		float velByDistance = std::min(std::max(distance*5,0.03f),0.06f);
+	if((!isInside && distance > 0.10) || (isInside && distance > 0.50)){
+		isInside = 0;
+		float velByDistance = std::min(std::max(distance*5,0.03f),0.04f);
 		if(std::abs(deltaAnglePosition)>1.2f){
-			twistOut.angular.z = -std::min(std::max(deltaAnglePosition*0.5f,-0.3f),0.3f);
+			twistOut.angular.z = -std::min(std::max(deltaAnglePosition*0.3f,-0.2f),0.2f);
 			twistOut.linear.x = 0.0f;
 		}else{
-			twistOut.angular.z = -std::min(std::max(deltaAnglePosition*0.5f,-0.3f),0.3f);
+			twistOut.angular.z = -std::min(std::max(deltaAnglePosition*0.3f,-0.2f),0.2f);
 			twistOut.linear.x = velByDistance*std::min(std::max(cos(deltaAnglePosition),0.0),1.0);
 		}
 		//ROS_INFO("GO TO POSITION:");
 	}else{
+		if(distance <= 0.10){
+			isInside = 1;
+		}
 		twistOut.linear.x = 0.0;
 		if(std::abs(deltaAnglePose)>0.08f){
-			twistOut.angular.z = std::min(std::max(deltaAnglePose*0.5f,-0.3f),0.3f);
+			twistOut.angular.z = std::min(std::max(deltaAnglePose*0.3f,-0.2f),0.2f);
 		}else{
 			twistOut.angular.z = 0.0f;
 		}
@@ -187,17 +209,17 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 	
 	tf::TransformListener listener;
 	tf::StampedTransform transform;
+
+	try{
+		listener.waitForTransform("base_link", lastPointCloud.header.frame_id, ros::Time(0), ros::Duration(10.0) );
+		listener.lookupTransform("base_link", lastPointCloud.header.frame_id, ros::Time(0), transform);
+	}catch(tf::TransformException ex){
+		ROS_ERROR("%s",ex.what());
+	}
 	
 	//ROS_INFO("Checking for collision:");
-	for(int i = 0; i < 360; ++i){
-		 geometry_msgs::Point32 pointInCloud = lastPointCloud.points[i];
-		 
-		try{
-			listener.waitForTransform("base_link", lastPointCloud.header.frame_id, ros::Time(0), ros::Duration(10.0) );
-			listener.lookupTransform("base_link", lastPointCloud.header.frame_id, ros::Time(0), transform);
-		}catch(tf::TransformException ex){
-			ROS_ERROR("%s",ex.what());
-		}
+	for(int i = 0; i < 360; i+=2){
+		geometry_msgs::Point32 pointInCloud = lastPointCloud.points[i];
 		
 		tf::Vector3 point(pointInCloud.x,pointInCloud.y,pointInCloud.z);
 		
@@ -207,22 +229,23 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 		float distance = sqrt(pow(point_tf.x(),2)+pow(point_tf.y(),2));
 
 		if(angleFromBase < angleWidth && angleFromBase > -angleWidth){
-				if(distance < 0.20){//*std::abs(std::cos(angleFromBase))){
-					ROS_INFO("Angle: %f",angleFromBase);
-					return 1;
-				}
+			if(distance < 0.20*std::abs(std::cos(angleFromBase))){
+				ROS_INFO("Angle: %f",angleFromBase);
+				return 1;
+			}
 		}	 
 	}
 	return 0;
 }
 
-void moveTowardsPose(const nav_msgs::Odometry& currentOdom, const geometry_msgs::PoseStamped& targetPose){
+void moveTowardsPose(const nav_msgs::Odometry& currentOdom, const geometry_msgs::PoseStamped& targetPose){	
+	
 	geometry_msgs::Twist signal = calculateTwist(currentOdom, targetPose);
-	if(checkCollisionCourse(signal, lastPointCloud, lastOdom)){
+	if(collisionCourseDetected){// || checkCollisionCourse(signal, lastPointCloud, lastOdom)){
 		ROS_INFO("Collision detected!");
 		signal.linear.x = 0;
 		signal.angular.z = 0;
-	}	
+	}		
 
 	sendMotorSignal(signal);
 }
@@ -236,6 +259,12 @@ int main(int argc, char **argv){
     ros::Subscriber targetPose_sub = n.subscribe("/move_base_simple/goal", 1, targetPoseCallback);
     ros::Subscriber currentPose_sub = n.subscribe("/odom", 1, currentPoseCallback);
     ros::Subscriber obstacle_sub = n.subscribe("/my_cloud", 1, obstacleDisntacesCallback);
+	
+	geometry_msgs::Twist sig;
+	last_signal = sig;
+
+	nav_msgs::Odometry odom;
+	lastOdom = odom;
 
 	sensor_msgs::PointCloud lastPointCloud_loc;
 	geometry_msgs::PoseStamped targetPose_loc;
@@ -245,7 +274,7 @@ int main(int argc, char **argv){
 	targetPose = targetPose_loc;
 	lastOdom = lastOdom_loc;
 
-    ros::Rate loop_rate(10);
+    ros::Rate loop_rate(5);
 
 	lastOdom = nav_msgs::Odometry();
 
