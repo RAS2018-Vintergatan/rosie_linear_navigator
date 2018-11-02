@@ -229,10 +229,10 @@ geometry_msgs::Twist calculateTwist(const nav_msgs::Odometry& currentOdom, const
 		//ROS_INFO("IN POSITION:");
 	}
 
-	ROS_ERROR("rosieX: %f, rosieY: %f, rosieAngle: %f -- targetX: %f, targetY: %f, targetAngle: %f",
+	/*ROS_ERROR("rosieX: %f, rosieY: %f, rosieAngle: %f -- targetX: %f, targetY: %f, targetAngle: %f",
 		 rosieWorldX, rosieWorldY, yaw, targetWorldX, targetWorldY, yaw_t);
 	ROS_ERROR("distance: %f, pointAngleDiff: %f, targetAngleDiff: %f",
-		 distance, deltaAnglePosition, deltaAnglePose);
+		 distance, deltaAnglePosition, deltaAnglePose);*/
 
 	return twistOut;
 }
