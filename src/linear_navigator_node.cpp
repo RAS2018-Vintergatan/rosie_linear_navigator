@@ -6,15 +6,23 @@
 #include <math.h>
 #include <tf/transform_listener.h>
 
-sensor_msgs::PointCloud lastPointCloud;
-geometry_msgs::PoseStamped targetPose;
-nav_msgs::Odometry lastOdom;
+boost::shared_ptr<sensor_msgs::PointCloud> lastPointCloud_ptr;
+boost::shared_ptr<geometry_msgs::PoseStamped> targetPose_ptr;
+boost::shared_ptr<nav_msgs::Odometry> lastOdom_ptr;
+
+boost::shared_ptr<tf::TransformListener> odom_tfl_ptr;
+boost::shared_ptr<tf::TransformListener> target_tfl_ptr;
+boost::shared_ptr<tf::TransformListener> laser_tfl_ptr;
+
+boost::shared_ptr<tf::StampedTransform> current_odom_tf_ptr;
+boost::shared_ptr<tf::StampedTransform> target_pose_tf_ptr;
+boost::shared_ptr<tf::StampedTransform> laser_point_tf_ptr;
 
 char gotOdom = 0;
 char gotTarget = 0;
 char gotPointCloud = 0;
 
-geometry_msgs::Twist last_signal;
+boost::shared_ptr<geometry_msgs::Twist> last_signal_ptr;
 ros::Publisher motorSignal_pub;
 
 char collisionCourseDetected = 1;
@@ -41,16 +49,23 @@ void sendMotorSignal(geometry_msgs::Twist& msg){
 	lastMotorLinearVelocitySignal = msg.linear.x;
 	lastMotorAngularVelocitySignal = msg.angular.z;
 
-	last_signal = msg;
+	*last_signal_ptr = msg;
+	//ROS_ERROR("Not really and error... but... Signal sent!");
 }
 
-void obstacleDisntacesCallback(const sensor_msgs::PointCloud& msg){
-	if(msg.header.seq > lastPointCloud.header.seq){
-		lastPointCloud = msg;
+void obstacleDistancesCallback(const sensor_msgs::PointCloud& msg){
+	if(msg.header.seq > lastPointCloud_ptr->header.seq){
+		*lastPointCloud_ptr = msg;
+		try{
+			(*laser_tfl_ptr).waitForTransform("base_link", msg.header.frame_id, ros::Time(0), ros::Duration(10.0));
+			(*laser_tfl_ptr).lookupTransform("base_link", msg.header.frame_id, ros::Time(0), *laser_point_tf_ptr);
+		}catch(tf::TransformException ex){
+			ROS_ERROR("%s",ex.what());
+		}
 		gotPointCloud = 1;
 	}	
 
-	collisionCourseDetected = checkCollisionCourse(last_signal, lastPointCloud, lastOdom);
+	collisionCourseDetected = checkCollisionCourse(*last_signal_ptr, *lastPointCloud_ptr, *lastOdom_ptr);
 	if(collisionCourseDetected){
 		geometry_msgs::Twist signal;
 		signal.linear.x = 0;
@@ -91,18 +106,33 @@ geometry_msgs/TwistWithCovariance twist
   float64[36] covariance
 */
 void currentPoseCallback(const nav_msgs::Odometry& msg){
-	if(!gotOdom || msg.header.seq > lastOdom.header.seq){
-		lastOdom = msg;
+	if(!gotOdom || msg.header.seq > lastOdom_ptr->header.seq){
+		try{
+			(*odom_tfl_ptr).waitForTransform("world", msg.header.frame_id, ros::Time(0), ros::Duration(10.0));
+			(*odom_tfl_ptr).lookupTransform("world", msg.header.frame_id, ros::Time(0), *current_odom_tf_ptr);
+		}catch(tf::TransformException ex){
+			ROS_ERROR("%s",ex.what());
+		}
+		*lastOdom_ptr = msg;
 		gotOdom = 1;
 	}
 }
 
 void targetPoseCallback(const geometry_msgs::PoseStamped& msg){
-	targetPose = msg;
+	*targetPose_ptr = msg;
+	try{
+		(*target_tfl_ptr).waitForTransform("world", msg.header.frame_id, ros::Time(0), ros::Duration(10.0));
+		(*target_tfl_ptr).lookupTransform("world", msg.header.frame_id, ros::Time(0), *target_pose_tf_ptr);
+	}catch(tf::TransformException ex){
+		ROS_ERROR("%s",ex.what());
+	}
 	gotTarget = 1;
 	isInside = 0;
 }
 
+/*
+ * Returns the angle between -3.14159 and +3.14159
+ */
 float capAngle(const float& angleIn){
 	float angleOut = angleIn;
 	while(angleOut < 0)
@@ -118,55 +148,72 @@ float capAngle(const float& angleIn){
 geometry_msgs::Twist calculateTwist(const nav_msgs::Odometry& currentOdom, const geometry_msgs::PoseStamped& targetPose){
 
 	geometry_msgs::Twist twistOut;
-	
-	tf::TransformListener listener;
-	tf::StampedTransform transform;
-	tf::StampedTransform transformTarget;
-	
-	try{
-		listener.waitForTransform("world", currentOdom.child_frame_id, ros::Time(0), ros::Duration(10.0) );
-		listener.lookupTransform("world", currentOdom.child_frame_id, ros::Time(0), transform);
-		listener.waitForTransform("world", targetPose.header.frame_id, ros::Time(0), ros::Duration(10.0) );
-		listener.lookupTransform("world", targetPose.header.frame_id, ros::Time(0), transformTarget);
-	}catch(tf::TransformException ex){
-		ROS_ERROR("%s",ex.what());
-		return twistOut;
-	}
-	
-	//ROS_INFO("targetX:%f,targetY:%f",transformTarget.getOrigin().x(),transformTarget.getOrigin().y());
 
-	float worldX = transform.getOrigin().x();
-	float worldY = transform.getOrigin().y();
-	float deltaX = targetPose.pose.position.x - worldX;
-	float deltaY = targetPose.pose.position.y - worldY;
+	float targetWorldX = (*target_pose_tf_ptr).getOrigin().x() + targetPose.pose.position.x;
+	float targetWorldY = (*target_pose_tf_ptr).getOrigin().y() + targetPose.pose.position.y;
+	float rosieWorldX = (*current_odom_tf_ptr).getOrigin().x() + currentOdom.pose.pose.position.x;
+	float rosieWorldY = (*current_odom_tf_ptr).getOrigin().y() + currentOdom.pose.pose.position.y;
+	float deltaX = targetWorldX - rosieWorldX;
+	float deltaY = targetWorldY - rosieWorldY;
 	float distance = sqrt(pow(deltaX,2) + pow(deltaY,2));
 	
-	tf::Quaternion deltaPoseQuaternion = transform.getRotation();
-	tf::Matrix3x3 m(deltaPoseQuaternion);
+	tf::Quaternion rosieQuaternion = (*current_odom_tf_ptr).getRotation();
+	tf::Matrix3x3 m_w(rosieQuaternion);
+	double roll_w, pitch_w, yaw_w;
+	m_w.getRPY(roll_w, pitch_w, yaw_w);
+
+	rosieQuaternion = tf::Quaternion(currentOdom.pose.pose.orientation.x,
+									currentOdom.pose.pose.orientation.y,
+									currentOdom.pose.pose.orientation.z,
+									currentOdom.pose.pose.orientation.w);
+	tf::Matrix3x3 m(rosieQuaternion);
 	double roll, pitch, yaw;
 	m.getRPY(roll, pitch, yaw);
+	yaw += yaw_w;
 
-	tf::Quaternion targetQuaternion = tf::Quaternion(targetPose.pose.orientation.x,
-							targetPose.pose.orientation.y,
-							targetPose.pose.orientation.z,
-							targetPose.pose.orientation.w);
+	tf::Quaternion targetQuaternion = (*target_pose_tf_ptr).getRotation();
+	tf::Matrix3x3 m_t_w(targetQuaternion);
+	double roll_t_w, pitch_t_w, yaw_t_w;
+	m_t_w.getRPY(roll_t_w, pitch_t_w, yaw_t_w);
+
+	targetQuaternion = tf::Quaternion(targetPose.pose.orientation.x,
+													targetPose.pose.orientation.y,
+													targetPose.pose.orientation.z,
+													targetPose.pose.orientation.w);
 	tf::Matrix3x3 m_t(targetQuaternion);
 	double roll_t, pitch_t, yaw_t;
 	m_t.getRPY(roll_t, pitch_t, yaw_t);
-
+	yaw_t += yaw_t_w;
 	
 	float deltaAnglePosition = capAngle(yaw - atan2(deltaY, deltaX));
 	float deltaAnglePose = capAngle(yaw_t-yaw);
+	char reverse = 0;
+	if(deltaAnglePosition < -1.57 || deltaAnglePosition > 1.57){
+		if(deltaAnglePose < 1.57 && deltaAnglePose > -1.57){
+			reverse = 1;
+		}
+	}
 	
 	if((!isInside && distance > 0.10) || (isInside && distance > 0.50)){
 		isInside = 0;
-		float velByDistance = std::min(std::max(distance*5,0.03f),0.04f);
-		if(std::abs(deltaAnglePosition)>1.2f){
-			twistOut.angular.z = -std::min(std::max(deltaAnglePosition*0.3f,-0.2f),0.2f);
-			twistOut.linear.x = 0.0f;
+		float velByDistance = std::min(std::max(distance*5,0.02f),0.03f);
+		if(reverse){
+			deltaAnglePosition = capAngle(deltaAnglePosition+3.14159);
+			if(std::abs(deltaAnglePosition)>1.2f){
+				twistOut.angular.z = -std::min(std::max(deltaAnglePosition*0.3f,-0.2f),0.2f);
+				twistOut.linear.x = 0.0f;
+			}else{
+				twistOut.angular.z = -std::min(std::max(deltaAnglePosition*0.3f,-0.2f),0.2f);
+				twistOut.linear.x = -velByDistance*std::min(std::max(cos(deltaAnglePosition),0.0),1.0);
+			}
 		}else{
-			twistOut.angular.z = -std::min(std::max(deltaAnglePosition*0.3f,-0.2f),0.2f);
-			twistOut.linear.x = velByDistance*std::min(std::max(cos(deltaAnglePosition),0.0),1.0);
+			if(std::abs(deltaAnglePosition)>1.2f){
+				twistOut.angular.z = -std::min(std::max(deltaAnglePosition*0.3f,-0.2f),0.2f);
+				twistOut.linear.x = 0.0f;
+			}else{
+				twistOut.angular.z = -std::min(std::max(deltaAnglePosition*0.3f,-0.2f),0.2f);
+				twistOut.linear.x = velByDistance*std::min(std::max(cos(deltaAnglePosition),0.0),1.0);
+			}
 		}
 		//ROS_INFO("GO TO POSITION:");
 	}else{
@@ -210,29 +257,19 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 
 	float angleCenter = 3.1415/2;
 	
-	tf::TransformListener listener;
-	tf::StampedTransform transform;
-
-	try{
-		listener.waitForTransform("base_link", lastPointCloud.header.frame_id, ros::Time(0), ros::Duration(10.0) );
-		listener.lookupTransform("base_link", lastPointCloud.header.frame_id, ros::Time(0), transform);
-	}catch(tf::TransformException ex){
-		ROS_ERROR("%s",ex.what());
-	}
-	
 	//ROS_INFO("Checking for collision:");
 	for(int i = 0; i < 360; i+=2){
 		geometry_msgs::Point32 pointInCloud = lastPointCloud.points[i];
 		
 		tf::Vector3 point(pointInCloud.x,pointInCloud.y,pointInCloud.z);
 		
-		tf::Vector3 point_tf = transform * point;
+		tf::Vector3 point_tf = (*laser_point_tf_ptr) * point;
 
 		float angleFromBase = capAngle(atan2(point_tf.x(), point_tf.y())-angleCenter);
 		float distance = sqrt(pow(point_tf.x(),2)+pow(point_tf.y(),2));
 
 		if(angleFromBase < angleWidth && angleFromBase > -angleWidth){
-			if(distance < 0.20*std::abs(std::cos(angleFromBase))){
+			if(distance < 0.05 + 0.20*std::abs(std::cos(angleFromBase))){
 				ROS_INFO("Angle: %f",angleFromBase);
 				return 1;
 			}
@@ -255,35 +292,32 @@ void moveTowardsPose(const nav_msgs::Odometry& currentOdom, const geometry_msgs:
 
 int main(int argc, char **argv){
     ros::init(argc, argv, "rosie_linear_navigator");
+	
+	odom_tfl_ptr.reset(new tf::TransformListener);
+	target_tfl_ptr.reset(new tf::TransformListener);
+	laser_tfl_ptr.reset(new tf::TransformListener);
+
+	current_odom_tf_ptr.reset(new tf::StampedTransform);
+	target_pose_tf_ptr.reset(new tf::StampedTransform);
+	laser_point_tf_ptr.reset(new tf::StampedTransform);
+
+	lastPointCloud_ptr.reset(new sensor_msgs::PointCloud);
+	targetPose_ptr.reset(new geometry_msgs::PoseStamped);
+	lastOdom_ptr.reset(new nav_msgs::Odometry);
+	last_signal_ptr.reset(new geometry_msgs::Twist);
 
     ros::NodeHandle n;
 
     motorSignal_pub = n.advertise<geometry_msgs::Twist>("/motor_controller/twist",1);
     ros::Subscriber targetPose_sub = n.subscribe("/move_base_simple/goal", 1, targetPoseCallback);
     ros::Subscriber currentPose_sub = n.subscribe("/odom", 1, currentPoseCallback);
-    ros::Subscriber obstacle_sub = n.subscribe("/my_cloud", 1, obstacleDisntacesCallback);
-	
-	geometry_msgs::Twist sig;
-	last_signal = sig;
+    ros::Subscriber obstacle_sub = n.subscribe("/my_cloud", 1, obstacleDistancesCallback);
 
-	nav_msgs::Odometry odom;
-	lastOdom = odom;
-
-	sensor_msgs::PointCloud lastPointCloud_loc;
-	geometry_msgs::PoseStamped targetPose_loc;
-	nav_msgs::Odometry lastOdom_loc;
-
-	lastPointCloud = lastPointCloud_loc;
-	targetPose = targetPose_loc;
-	lastOdom = lastOdom_loc;
-
-    ros::Rate loop_rate(5);
-
-	lastOdom = nav_msgs::Odometry();
+    ros::Rate loop_rate(10);
 
     while(ros::ok()){
 		if(gotOdom && gotTarget){
-			moveTowardsPose(lastOdom, targetPose);
+			moveTowardsPose(*lastOdom_ptr, *targetPose_ptr);
 		}
         ros::spinOnce();
         loop_rate.sleep();
