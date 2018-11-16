@@ -428,7 +428,7 @@ int main(int argc, char **argv){
     ros::NodeHandle n;
 
     motorSignal_pub = n.advertise<geometry_msgs::Twist>("/motor_controller/twist",1);
-    ros::Subscriber targetPose_sub = n.subscribe("/move_base_simple/goal", 1, targetPoseCallback);
+    ros::Subscriber targetPose_sub = n.subscribe("/rosie_pose_goal", 1, targetPoseCallback);
     ros::Subscriber currentPose_sub = n.subscribe("/odom", 1, currentPoseCallback);
     ros::Subscriber obstacle_sub = n.subscribe("/my_cloud", 1, obstacleDistancesCallback);
 
