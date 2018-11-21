@@ -5,18 +5,22 @@
 #include <sensor_msgs/PointCloud.h>
 #include <math.h>
 #include <tf/transform_listener.h>
+#include <visualization_msgs/Marker.h>
 
 boost::shared_ptr<sensor_msgs::PointCloud> lastPointCloud_ptr;
 boost::shared_ptr<geometry_msgs::PoseStamped> targetPose_ptr;
 boost::shared_ptr<nav_msgs::Odometry> lastOdom_ptr;
+boost::shared_ptr<geometry_msgs::PoseStamped> lastObstaclePoint_ptr;
 
 boost::shared_ptr<tf::TransformListener> odom_tfl_ptr;
 boost::shared_ptr<tf::TransformListener> target_tfl_ptr;
 boost::shared_ptr<tf::TransformListener> laser_tfl_ptr;
+boost::shared_ptr<tf::TransformListener> obstacle_tfl_ptr;
 
 boost::shared_ptr<tf::StampedTransform> current_odom_tf_ptr;
 boost::shared_ptr<tf::StampedTransform> target_pose_tf_ptr;
 boost::shared_ptr<tf::StampedTransform> laser_point_tf_ptr;
+boost::shared_ptr<tf::StampedTransform> obstacle_point_tf_ptr;
 
 char gotOdom = 0;
 char gotTarget = 0;
@@ -53,7 +57,29 @@ void sendMotorSignal(geometry_msgs::Twist& msg){
 	//ROS_ERROR("Not really and error... but... Signal sent!");
 }
 
-void obstacleDistancesCallback(const sensor_msgs::PointCloud& msg){
+void obstacleObjectBatteryCallback(const visualization_msgs::Marker& msg){
+	if(msg.header.seq > lastPointCloud_ptr->header.seq){
+		//*lastPointCloud_ptr = msg;
+		try{
+			(*obstacle_tfl_ptr).waitForTransform("world", msg.header.frame_id, ros::Time(0), ros::Duration(10.0));
+			(*obstacle_tfl_ptr).lookupTransform("world", msg.header.frame_id, ros::Time(0), *obstacle_point_tf_ptr);
+		}catch(tf::TransformException ex){
+			ROS_ERROR("%s",ex.what());
+		}
+		
+		float obstWorldX = (*obstacle_point_tf_ptr).getOrigin().x() + msg.pose.position.x;
+		float obstWorldY = (*obstacle_point_tf_ptr).getOrigin().y() + msg.pose.position.y;
+
+		lastObstaclePoint_ptr->header = msg.header;
+		lastObstaclePoint_ptr->header.frame_id = "world";
+		lastObstaclePoint_ptr->pose.orientation = msg.pose.orientation;
+		lastObstaclePoint_ptr->pose.position.x = obstWorldX;
+		lastObstaclePoint_ptr->pose.position.x = obstWorldY;
+		lastObstaclePoint_ptr->pose.position.z = 0;
+	}	
+}
+
+void obstacleWallsCallback(const sensor_msgs::PointCloud& msg){
 	if(msg.header.seq > lastPointCloud_ptr->header.seq){
 		*lastPointCloud_ptr = msg;
 		try{
@@ -296,22 +322,26 @@ int main(int argc, char **argv){
 	odom_tfl_ptr.reset(new tf::TransformListener);
 	target_tfl_ptr.reset(new tf::TransformListener);
 	laser_tfl_ptr.reset(new tf::TransformListener);
+	obstacle_tfl_ptr.reset(new tf::TransformListener);
 
 	current_odom_tf_ptr.reset(new tf::StampedTransform);
 	target_pose_tf_ptr.reset(new tf::StampedTransform);
 	laser_point_tf_ptr.reset(new tf::StampedTransform);
+	obstacle_point_tf_ptr.reset(new tf::StampedTransform);
 
 	lastPointCloud_ptr.reset(new sensor_msgs::PointCloud);
 	targetPose_ptr.reset(new geometry_msgs::PoseStamped);
 	lastOdom_ptr.reset(new nav_msgs::Odometry);
 	last_signal_ptr.reset(new geometry_msgs::Twist);
+	lastObstaclePoint_ptr.reset(new geometry_msgs::PoseStamped);
 
     ros::NodeHandle n;
 
     motorSignal_pub = n.advertise<geometry_msgs::Twist>("/motor_controller/twist",1);
     ros::Subscriber targetPose_sub = n.subscribe("/rosie_pose_goal", 1, targetPoseCallback);
     ros::Subscriber currentPose_sub = n.subscribe("/odom", 1, currentPoseCallback);
-    ros::Subscriber obstacle_sub = n.subscribe("/my_cloud", 1, obstacleDistancesCallback);
+    ros::Subscriber obstacle_sub = n.subscribe("/my_cloud", 1, obstacleWallsCallback);
+	ros::Subscriber obstacle_object_sub = n.subscribe("/visualization_marker_battery", 1, obstacleObjectBatteryCallback);
 
     ros::Rate loop_rate(10);
 
