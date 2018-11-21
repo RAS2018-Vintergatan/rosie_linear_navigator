@@ -7,6 +7,9 @@
 #include <tf/transform_listener.h>
 #include <visualization_msgs/Marker.h>
 
+#define PI 3.141592f
+#define TWO_PI 6.28319f
+
 boost::shared_ptr<sensor_msgs::PointCloud> lastPointCloud_ptr;
 boost::shared_ptr<geometry_msgs::PoseStamped> targetPose_ptr;
 boost::shared_ptr<nav_msgs::Odometry> lastOdom_ptr;
@@ -91,13 +94,13 @@ void obstacleWallsCallback(const sensor_msgs::PointCloud& msg){
 		gotPointCloud = 1;
 	}	
 
-	collisionCourseDetected = checkCollisionCourse(*last_signal_ptr, *lastPointCloud_ptr, *lastOdom_ptr);
+	/*collisionCourseDetected = checkCollisionCourse(*last_signal_ptr, *lastPointCloud_ptr, *lastOdom_ptr);
 	if(collisionCourseDetected){
 		geometry_msgs::Twist signal;
 		signal.linear.x = 0;
 		signal.angular.z = 0;
 		sendMotorSignal(signal);
-	}
+	}*/
 }
 
 /*
@@ -157,18 +160,122 @@ void targetPoseCallback(const geometry_msgs::PoseStamped& msg){
 }
 
 /*
- * Returns the angle between -3.14159 and +3.14159
+ * Returns the angle between -PI and +PI
  */
 float capAngle(const float& angleIn){
 	float angleOut = angleIn;
 	while(angleOut < 0)
-			angleOut += 6.28319f;
-	while(angleOut > 6.28319f)
-		angleOut -= 6.28319f;
-	if(angleOut > 3.14159){
-		angleOut = (angleOut-6.28319);
+			angleOut += TWO_PI;
+	while(angleOut > TWO_PI)
+		angleOut -= TWO_PI;
+	if(angleOut > PI){
+		angleOut = (angleOut-TWO_PI);
 	}
 	return angleOut;
+}
+
+float calcAngleCenterModifier(float omega, float vel){
+	/*if(vel == 0)
+		vel = 0.1f;
+	float angleOut = (omega/2.0f) * (1.0f/vel);
+	angleOut = std::min(std::max(angleOut, omega/2), PI/2);*/
+	if(omega > -0.1 && omega < 0.1){
+		return 0;
+	}
+	if(omega < 0){
+		return ((-PI-omega)/2.0f)*((1.0f-vel)/(1.0f-0.0f)) + (omega/2.0f);
+	}else{
+		return ((PI-omega)/2.0f)*((1.0f-vel)/(1.0f-0.0f)) + (omega/2.0f);	
+	}
+}
+
+geometry_msgs::Twist adjustForCollisionAvoidance(geometry_msgs::Twist twistIn){
+	geometry_msgs::Twist twistOut;
+	twistOut.linear.x = twistIn.linear.x;
+	twistOut.angular.z = twistIn.angular.z;
+
+	if(!gotPointCloud || (twistIn.linear.x < 0.005 && twistIn.linear.x > -0.005)){
+		return twistOut;
+	}
+
+	char reversing = 0;
+	if(twistIn.linear.x < 0){
+		reversing = 1;
+	}
+
+	char binHistogram[180];
+
+	float angleCenter = 0;
+	if(!reversing){
+		angleCenter = (PI/2)-calcAngleCenterModifier(twistIn.angular.z, twistIn.linear.x);
+	}else{
+		angleCenter = (-PI/2)-calcAngleCenterModifier(twistIn.angular.z, -twistIn.linear.x);
+	}
+
+	int angleCenterLidarIndex = (angleCenter*PI)/(180)+180;
+
+	while(angleCenterLidarIndex < 0){
+		angleCenterLidarIndex+=360;
+	}
+	while(angleCenterLidarIndex >= 360){
+		angleCenterLidarIndex-=360;
+	}
+
+	int biggestOpenAreaStart = -1;
+	int biggestOpenAreaEnd = -1;
+
+	int closestIndex = 0;
+	float closestDistance = -1;
+
+	int currentOpenAreaStart = 0;
+
+	char was_open = 0;
+
+	for(int i = 0; i < 180; ++i){
+		int index = i+angleCenterLidarIndex-90;
+		while(index>=360){
+			index -= 360;
+		}
+		while(index < 0){
+			index += 360;
+		}
+
+		geometry_msgs::Point32 pointInCloud = lastPointCloud_ptr->points[index];
+		
+		float distance = sqrt(pow(pointInCloud.x, 2)+pow(pointInCloud.y,2));
+
+		char is_open = ((distance>0.30f)||(isnan(distance)))?1:0;
+
+		if(!was_open && is_open){
+			currentOpenAreaStart = i;
+			ROS_ERROR("Setting current start to: %d", currentOpenAreaStart);
+		}
+		if((!is_open) && was_open  || (i == 179)){
+			int currentOpenAreaEnd = i-1;
+			if((currentOpenAreaEnd - currentOpenAreaStart) > (biggestOpenAreaEnd - biggestOpenAreaStart)){
+				biggestOpenAreaStart = currentOpenAreaStart;
+				biggestOpenAreaEnd = currentOpenAreaEnd;
+			}
+		}
+
+		was_open = is_open;
+	}
+	if(biggestOpenAreaStart < 0){
+		biggestOpenAreaStart = 0;
+	}if(biggestOpenAreaEnd < 0){
+		biggestOpenAreaEnd = 179;
+	}
+
+	int openAreaMid = (biggestOpenAreaStart+((biggestOpenAreaEnd-biggestOpenAreaStart)>>1))-90+1;
+
+	float angleAdjustments = capAngle(((float)openAreaMid)*(TWO_PI)/360.0f);
+
+	twistOut.angular.z += std::min(angleAdjustments/6, 0.3f); //This could be changed
+
+	ROS_ERROR("Closest lidar index:%d, distance:%f, adjusting:%f, openMid:%d, openStart:%d, openEnd:%d",
+				closestIndex,closestDistance, angleAdjustments,openAreaMid,biggestOpenAreaStart,biggestOpenAreaEnd);
+
+	return twistOut;
 }
 
 geometry_msgs::Twist calculateTwist(const nav_msgs::Odometry& currentOdom, const geometry_msgs::PoseStamped& targetPose){
@@ -224,7 +331,7 @@ geometry_msgs::Twist calculateTwist(const nav_msgs::Odometry& currentOdom, const
 		isInside = 0;
 		float velByDistance = std::min(std::max(distance*5,0.02f),0.03f);
 		if(reverse){
-			deltaAnglePosition = capAngle(deltaAnglePosition+3.14159);
+			deltaAnglePosition = capAngle(deltaAnglePosition+PI);
 			if(std::abs(deltaAnglePosition)>1.2f){
 				twistOut.angular.z = -std::min(std::max(deltaAnglePosition*0.3f,-0.2f),0.2f);
 				twistOut.linear.x = 0.0f;
@@ -258,9 +365,9 @@ geometry_msgs::Twist calculateTwist(const nav_msgs::Odometry& currentOdom, const
 	/*ROS_ERROR("rosieX: %f, rosieY: %f, rosieAngle: %f -- targetX: %f, targetY: %f, targetAngle: %f",
 		 rosieWorldX, rosieWorldY, yaw, targetWorldX, targetWorldY, yaw_t);
 	ROS_ERROR("distance: %f, pointAngleDiff: %f, targetAngleDiff: %f",
-		 distance, deltaAnglePosition, deltaAnglePose);*/
+		 distance, deltaAnglePosition, deltaAnglePose);*/	
 
-	return twistOut;
+	return adjustForCollisionAvoidance(twistOut);
 }
 
 char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud lastPointCloud, nav_msgs::Odometry lastOdom){
@@ -271,7 +378,12 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 		return 0;
 	}
 
-	float angleWidth = std::max(1.0 + abs(lastOdom.twist.twist.angular.z),1.5);
+	char reversing = 0;
+	if(signal.linear.x < 0){
+		reversing = 1;
+	}
+
+	float angleWidth = 0.3927f; //std::max(0.3927 + abs(lastOdom.twist.twist.angular.z),0.5); //0.3927 ~ 45 degrees
 
 	tf::Quaternion poseQuaternion = tf::Quaternion(lastOdom.pose.pose.orientation.x,
 								lastOdom.pose.pose.orientation.y,
@@ -281,9 +393,14 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 	double roll, pitch, yaw;
 	m.getRPY(roll, pitch, yaw);
 
-	float angleCenter = 3.1415/2;
-	
-	//ROS_INFO("Checking for collision:");
+	float angleCenter = 0;
+	if(!reversing){
+		angleCenter = (PI/2)-calcAngleCenterModifier(signal.angular.z, signal.linear.x);
+	}else{
+		angleCenter = (-PI/2)-calcAngleCenterModifier(signal.angular.z, -signal.linear.x);
+	}
+
+	//ROS_ERROR("Checking for collision: angleCenter:%f", angleCenter);
 	for(int i = 0; i < 360; i+=2){
 		geometry_msgs::Point32 pointInCloud = lastPointCloud.points[i];
 		
@@ -295,8 +412,10 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 		float distance = sqrt(pow(point_tf.x(),2)+pow(point_tf.y(),2));
 
 		if(angleFromBase < angleWidth && angleFromBase > -angleWidth){
-			if(distance < 0.05 + 0.20*std::abs(std::cos(angleFromBase))){
+			if(!reversing && distance < 0.10 + 0.20*std::abs(std::cos(angleFromBase)) ||
+				reversing && distance < 0.20 + 0.20*std::abs(std::cos(angleFromBase))){
 				ROS_INFO("Angle: %f",angleFromBase);
+				ROS_ERROR("Colliding, angleFromBase:%f", angleFromBase);
 				return 1;
 			}
 		}	 
@@ -307,7 +426,7 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 void moveTowardsPose(const nav_msgs::Odometry& currentOdom, const geometry_msgs::PoseStamped& targetPose){	
 	
 	geometry_msgs::Twist signal = calculateTwist(currentOdom, targetPose);
-	if(collisionCourseDetected){// || checkCollisionCourse(signal, lastPointCloud, lastOdom)){
+	if(checkCollisionCourse(signal, *lastPointCloud_ptr, *lastOdom_ptr)){
 		ROS_INFO("Collision detected!");
 		signal.linear.x = 0;
 		signal.angular.z = 0;
