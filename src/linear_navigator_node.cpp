@@ -14,16 +14,22 @@ boost::shared_ptr<sensor_msgs::PointCloud> lastPointCloud_ptr;
 boost::shared_ptr<geometry_msgs::PoseStamped> targetPose_ptr;
 boost::shared_ptr<nav_msgs::Odometry> lastOdom_ptr;
 boost::shared_ptr<geometry_msgs::PoseStamped> lastObstaclePoint_ptr;
+boost::shared_ptr<geometry_msgs::PoseStamped> lastObstacleBatPoint_ptr;
 
 boost::shared_ptr<tf::TransformListener> odom_tfl_ptr;
 boost::shared_ptr<tf::TransformListener> target_tfl_ptr;
 boost::shared_ptr<tf::TransformListener> laser_tfl_ptr;
 boost::shared_ptr<tf::TransformListener> obstacle_tfl_ptr;
+boost::shared_ptr<tf::TransformListener> obstacle_bat_tfl_ptr;
 
 boost::shared_ptr<tf::StampedTransform> current_odom_tf_ptr;
 boost::shared_ptr<tf::StampedTransform> target_pose_tf_ptr;
 boost::shared_ptr<tf::StampedTransform> laser_point_tf_ptr;
 boost::shared_ptr<tf::StampedTransform> obstacle_point_tf_ptr;
+boost::shared_ptr<tf::StampedTransform> obstacle_bat_point_tf_ptr;
+
+float obstDist = 1.0f;
+float obstBatDist = 1.0f;
 
 char gotOdom = 0;
 char gotTarget = 0;
@@ -34,8 +40,9 @@ ros::Publisher motorSignal_pub;
 
 char collisionCourseDetected = 1;
 char isInside = 0;
+char isInsideAngular = 0;
 
-char checkCollisionCourse(geometry_msgs::Twist, sensor_msgs::PointCloud, nav_msgs::Odometry);
+char checkCollisionCourse(geometry_msgs::Twist, sensor_msgs::PointCloud, nav_msgs::Odometry, float, float);
 
 /*
 geometry_msgs/Vector3 linear
@@ -61,7 +68,33 @@ void sendMotorSignal(geometry_msgs::Twist& msg){
 }
 
 void obstacleObjectBatteryCallback(const visualization_msgs::Marker& msg){
-	if(msg.header.seq > lastPointCloud_ptr->header.seq){
+	if(msg.header.seq != lastObstacleBatPoint_ptr->header.seq){
+		//*lastPointCloud_ptr = msg;
+		try{
+			(*obstacle_bat_tfl_ptr).waitForTransform("world", msg.header.frame_id, ros::Time(0), ros::Duration(10.0));
+			(*obstacle_bat_tfl_ptr).lookupTransform("world", msg.header.frame_id, ros::Time(0), *obstacle_bat_point_tf_ptr);
+		}catch(tf::TransformException ex){
+			ROS_ERROR("%s",ex.what());
+		}
+		
+		float obstWorldX = (*obstacle_bat_point_tf_ptr).getOrigin().x() + msg.pose.position.x;
+		float obstWorldY = (*obstacle_bat_point_tf_ptr).getOrigin().y() + msg.pose.position.y;
+		float obstRobotX = msg.pose.position.x;
+		float obstRobotY = msg.pose.position.y;
+		float Dist = sqrt(pow(obstRobotX,2) + pow(obstRobotY,2));
+		obstBatDist = Dist;
+
+		lastObstacleBatPoint_ptr->header = msg.header;
+		lastObstacleBatPoint_ptr->header.frame_id = "world";
+		lastObstacleBatPoint_ptr->pose.orientation = msg.pose.orientation;
+		lastObstacleBatPoint_ptr->pose.position.x = obstWorldX;
+		lastObstacleBatPoint_ptr->pose.position.x = obstWorldY;
+		lastObstacleBatPoint_ptr->pose.position.z = 0;
+	}	
+}
+
+void objectCallback(const visualization_msgs::Marker& msg){
+	if(msg.header.seq != lastObstaclePoint_ptr->header.seq){
 		//*lastPointCloud_ptr = msg;
 		try{
 			(*obstacle_tfl_ptr).waitForTransform("world", msg.header.frame_id, ros::Time(0), ros::Duration(10.0));
@@ -72,6 +105,10 @@ void obstacleObjectBatteryCallback(const visualization_msgs::Marker& msg){
 		
 		float obstWorldX = (*obstacle_point_tf_ptr).getOrigin().x() + msg.pose.position.x;
 		float obstWorldY = (*obstacle_point_tf_ptr).getOrigin().y() + msg.pose.position.y;
+		float obstRobotX = msg.pose.position.x;
+		float obstRobotY = msg.pose.position.y;
+		float Dist = sqrt(pow(obstRobotX,2) + pow(obstRobotY,2));
+		obstDist = Dist;
 
 		lastObstaclePoint_ptr->header = msg.header;
 		lastObstaclePoint_ptr->header.frame_id = "world";
@@ -94,13 +131,13 @@ void obstacleWallsCallback(const sensor_msgs::PointCloud& msg){
 		gotPointCloud = 1;
 	}	
 
-	/*collisionCourseDetected = checkCollisionCourse(*last_signal_ptr, *lastPointCloud_ptr, *lastOdom_ptr);
+	collisionCourseDetected = checkCollisionCourse(*last_signal_ptr, *lastPointCloud_ptr, *lastOdom_ptr, obstDist, obstBatDist);
 	if(collisionCourseDetected){
 		geometry_msgs::Twist signal;
 		signal.linear.x = 0;
 		signal.angular.z = 0;
 		sendMotorSignal(signal);
-	}*/
+	}
 }
 
 /*
@@ -354,9 +391,11 @@ geometry_msgs::Twist calculateTwist(const nav_msgs::Odometry& currentOdom, const
 			isInside = 1;
 		}
 		twistOut.linear.x = 0.0;
-		if(std::abs(deltaAnglePose)>0.08f){
+		if((!isInsideAngular && std::abs(deltaAnglePose)>0.08f) || (isInsideAngular && std::abs(deltaAnglePose)>0.12f)){
+			isInsideAngular = 1;
 			twistOut.angular.z = std::min(std::max(deltaAnglePose*0.3f,-0.2f),0.2f);
 		}else{
+			isInsideAngular = 0;
 			twistOut.angular.z = 0.0f;
 		}
 		//ROS_INFO("IN POSITION:");
@@ -370,7 +409,7 @@ geometry_msgs::Twist calculateTwist(const nav_msgs::Odometry& currentOdom, const
 	return adjustForCollisionAvoidance(twistOut);
 }
 
-char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud lastPointCloud, nav_msgs::Odometry lastOdom){
+char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud lastPointCloud, nav_msgs::Odometry lastOdom, float camDist, float camBatDist){
 	//ROS_INFO("LinearX: %f,LinearY: %f,LinearZ: %f,AngularX: %f,AngularY: %f,AngularZ: %f",
 	//		 signal.linear.x,signal.linear.y,signal.linear.z,signal.angular.x,signal.angular.y,signal.angular.z);
 
@@ -400,6 +439,14 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 		angleCenter = (-PI/2)-calcAngleCenterModifier(signal.angular.z, -signal.linear.x);
 	}
 
+	ROS_ERROR("camDist: %f, camBatDist: %f, angleCenter: %f", camDist, camBatDist, angleCenter);
+	if(camDist < (0.2 * (PI/2 - abs(angleCenter-PI/2))/(PI/2))){
+		return 1;
+	}
+	if(camBatDist < (0.2 * (PI/2 - abs(angleCenter-PI/2))/(PI/2))){
+		return 1;
+	}
+
 	//ROS_ERROR("Checking for collision: angleCenter:%f", angleCenter);
 	for(int i = 0; i < 360; i+=2){
 		geometry_msgs::Point32 pointInCloud = lastPointCloud.points[i];
@@ -426,7 +473,7 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 void moveTowardsPose(const nav_msgs::Odometry& currentOdom, const geometry_msgs::PoseStamped& targetPose){	
 	
 	geometry_msgs::Twist signal = calculateTwist(currentOdom, targetPose);
-	if(checkCollisionCourse(signal, *lastPointCloud_ptr, *lastOdom_ptr)){
+	if(checkCollisionCourse(signal, *lastPointCloud_ptr, *lastOdom_ptr, obstDist, obstBatDist)){
 		ROS_INFO("Collision detected!");
 		signal.linear.x = 0;
 		signal.angular.z = 0;
@@ -442,17 +489,20 @@ int main(int argc, char **argv){
 	target_tfl_ptr.reset(new tf::TransformListener);
 	laser_tfl_ptr.reset(new tf::TransformListener);
 	obstacle_tfl_ptr.reset(new tf::TransformListener);
+	obstacle_bat_tfl_ptr.reset(new tf::TransformListener);
 
 	current_odom_tf_ptr.reset(new tf::StampedTransform);
 	target_pose_tf_ptr.reset(new tf::StampedTransform);
 	laser_point_tf_ptr.reset(new tf::StampedTransform);
 	obstacle_point_tf_ptr.reset(new tf::StampedTransform);
+	obstacle_bat_point_tf_ptr.reset(new tf::StampedTransform);
 
 	lastPointCloud_ptr.reset(new sensor_msgs::PointCloud);
 	targetPose_ptr.reset(new geometry_msgs::PoseStamped);
 	lastOdom_ptr.reset(new nav_msgs::Odometry);
 	last_signal_ptr.reset(new geometry_msgs::Twist);
 	lastObstaclePoint_ptr.reset(new geometry_msgs::PoseStamped);
+	lastObstacleBatPoint_ptr.reset(new geometry_msgs::PoseStamped);
 
     ros::NodeHandle n;
 
@@ -461,6 +511,7 @@ int main(int argc, char **argv){
     ros::Subscriber currentPose_sub = n.subscribe("/odom", 1, currentPoseCallback);
     ros::Subscriber obstacle_sub = n.subscribe("/my_cloud", 1, obstacleWallsCallback);
 	ros::Subscriber obstacle_object_sub = n.subscribe("/visualization_marker_battery", 1, obstacleObjectBatteryCallback);
+	ros::Subscriber any_object_sub = n.subscribe("/visualization_marker", 1, objectCallback);
 
     ros::Rate loop_rate(10);
 
