@@ -1,0 +1,2 @@
+linear_thresholds: {lower: 0.05, upper: 0.15}
+angular_thresholds: {lower: 0.05, upper: 0.25}

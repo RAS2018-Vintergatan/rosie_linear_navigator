@@ -39,6 +39,11 @@ boost::shared_ptr<geometry_msgs::Twist> last_signal_ptr;
 ros::Publisher motorSignal_pub;
 ros::Publisher fovVisualisationPublisher;
 
+float positionLowerThreshold = 0.05;
+float positionUpperThreshold = 0.15;
+float angularLowerThreshold = 0.01;
+float angularUpperThreshold = 0.02;
+
 char collisionCourseDetected = 1;
 char isInside = 0;
 char isInsideAngular = 0;
@@ -366,8 +371,8 @@ geometry_msgs::Twist calculateTwist(const nav_msgs::Odometry& currentOdom, const
 	char reverse = 0;
 	if((!reverse && (deltaAnglePosition < -1.57 || deltaAnglePosition > 1.57))
 	   || (reverse && ((deltaAnglePosition < -1.67 || deltaAnglePosition > 1.67)))){
-		if((!reverse && (deltaAnglePose < -1.57 || deltaAnglePose > 1.57))
-	  	 || (reverse && ((deltaAnglePose < -1.67 || deltaAnglePose > 1.67)))){
+		if((!reverse && (deltaAnglePose > -1.57 || deltaAnglePose < 1.57))
+	  	 || (reverse && ((deltaAnglePose > -1.67 || deltaAnglePose < 1.67)))){
 			reverse = 1;
 		}else{
 			reverse = 0;
@@ -376,7 +381,7 @@ geometry_msgs::Twist calculateTwist(const nav_msgs::Odometry& currentOdom, const
 		reverse = 0;
 	}
 	
-	if((!isInside && distance > 0.10) || (isInside && distance > 0.50)){
+	if((!isInside && distance > positionLowerThreshold) || (isInside && distance > positionUpperThreshold)){
 		isInside = 0;
 		float velByDistance = std::min(std::max(distance*5,0.02f),0.03f);
 		if(reverse){
@@ -403,11 +408,11 @@ geometry_msgs::Twist calculateTwist(const nav_msgs::Odometry& currentOdom, const
 			isInside = 1;
 		}
 		twistOut.linear.x = 0.0;
-		if((!isInsideAngular && std::abs(deltaAnglePose)>0.08f) || (isInsideAngular && std::abs(deltaAnglePose)>0.15f)){
-			isInsideAngular = 1;
+		if((!isInsideAngular && std::abs(deltaAnglePose)>angularLowerThreshold) || (isInsideAngular && std::abs(deltaAnglePose)>angularUpperThreshold)){
+			isInsideAngular = 0;
 			twistOut.angular.z = std::min(std::max(deltaAnglePose*0.3f,-0.2f),0.2f);
 		}else{
-			isInsideAngular = 0;
+			isInsideAngular = 1;
 			twistOut.angular.z = 0.0f;
 		}
 		//ROS_INFO("IN POSITION:");
@@ -459,9 +464,9 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 		return 1;
 	}
 	
-	float collisionThreshold = 0.15;
+	float collisionThreshold = 0.15 + 2*signal.linear.x;
 	if(reversing){
-		collisionThreshold = 0.25;
+		collisionThreshold = 0.25 - 2*signal.linear.x;
 	}
 	
 	visualization_msgs::Marker line_list;
@@ -544,6 +549,15 @@ int main(int argc, char **argv){
 	lastObstacleBatPoint_ptr.reset(new geometry_msgs::PoseStamped);
 
     ros::NodeHandle n;
+    
+    std::map<std::string,double> linearThresholds, angularThresholds;
+    n.getParam("linear_thresholds", linearThresholds);
+    n.getParam("angular_thresholds", angularThresholds);
+
+    positionLowerThreshold = linearThresholds["lower"];
+    positionUpperThreshold = linearThresholds["upper"];
+    angularLowerThreshold = angularThresholds["lower"];
+    angularUpperThreshold = angularThresholds["upper"];
 
     motorSignal_pub = n.advertise<geometry_msgs::Twist>("/motor_controller/twist",1);
     ros::Subscriber targetPose_sub = n.subscribe("/rosie_pose_goal", 1, targetPoseCallback);

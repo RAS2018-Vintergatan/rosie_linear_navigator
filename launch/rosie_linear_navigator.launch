@@ -1,5 +1,8 @@
 <launch>
 
+	<!-- load parameters -->
+	<rosparam command="load" file="$(find rosie_linear_navigator)/navigator_params.yaml"/>
+
 	<!-- run the linear navigator node -->
 	<node pkg="rosie_linear_navigator" type="rosie_linear_navigator" name="rosie_linear_navigator"/>
 
