@@ -45,6 +45,7 @@ float angularLowerThreshold = 0.01;
 float angularUpperThreshold = 0.02;
 
 char collisionCourseDetected = 1;
+char collidingNear = 0;
 char isInside = 0;
 char isInsideAngular = 0;
 char reverse = 0;
@@ -237,6 +238,80 @@ float calcAngleCenterModifier(float omega, float vel){
 	return return_val;
 }
 
+geometry_msgs::Twist escapeCloseWalls(){
+	int count = 0;
+	int currentOpenAreaStart = 0;
+	int currentOpenAreaEnd = 360;
+	int firstPoint = 0;
+	int lastPoint = 0;
+	int areaBiggest = 0;
+	int areaBiggestEnd = 360;
+	int areaBiggestStart = 0;
+
+	char was_open = 1;
+	
+	for(int i = 0; i < 360; ++i){
+		
+		int index = i;
+
+		geometry_msgs::Point32 pointInCloud = lastPointCloud_ptr->points[index];
+		
+		float distance = sqrt(pow(pointInCloud.x, 2)+pow(pointInCloud.y,2));
+
+		char is_open = ((distance>0.24f)||(isnan(distance)))?1:0;
+
+		if(!was_open && is_open){
+			currentOpenAreaStart = i;
+			ROS_ERROR("Setting current start to: %d", currentOpenAreaStart);
+			lastPoint = currentOpenAreaStart; 	//Last point where open area started before 0
+		}
+		if(was_open && !is_open){
+			currentOpenAreaEnd = i;
+			if(++count == 1){
+				firstPoint = currentOpenAreaEnd;	//First point where open Area ended after 0
+			}
+			int areaSizeCurrent = i-currentOpenAreaStart;
+			if (areaBiggest < areaSizeCurrent){
+				areaBiggest = areaSizeCurrent;
+				areaBiggestStart = currentOpenAreaStart;
+				areaBiggestEnd = currentOpenAreaEnd;
+			}
+		}
+		
+		if(i==359 && !is_open){
+			lastPoint = i;
+		}
+		if(i==0 && !is_open){
+			firstPoint = i;
+			++count;
+		}
+		
+		was_open = is_open;
+	}
+	
+	int areaSizeCheck = 360 - lastPoint + firstPoint;
+	areaBiggest = areaBiggestEnd-areaBiggestStart;
+	if (areaSizeCheck>areaBiggest){
+		areaBiggest = areaSizeCheck;
+		areaBiggestStart = lastPoint - 360;
+		areaBiggestEnd = firstPoint;
+	}
+	int escapeDirection = (areaBiggestEnd+areaBiggestStart)/2;
+	
+	float escapeAngle = capAngle((float)escapeDirection*PI*2.0f/360.0f);
+	
+	geometry_msgs::Twist twistOut;
+
+	twistOut.angular.z = std::min(std::max(escapeAngle*0.3f,-0.2f),0.2f);
+	twistOut.linear.x = 0.03*cos(escapeAngle);
+	
+	ROS_ERROR("adjusting:%f, openStart:%d, openEnd:%d",
+				escapeAngle,areaBiggestStart,areaBiggestEnd);
+
+	return twistOut;
+}
+
+
 geometry_msgs::Twist adjustForCollisionAvoidance(geometry_msgs::Twist twistIn){
 	geometry_msgs::Twist twistOut;
 	twistOut.linear.x = twistIn.linear.x;
@@ -320,8 +395,8 @@ geometry_msgs::Twist adjustForCollisionAvoidance(geometry_msgs::Twist twistIn){
 
 	twistOut.angular.z += std::min(angleAdjustments/6, 0.3f); //This could be changed
 
-	ROS_ERROR("Closest lidar index:%d, distance:%f, adjusting:%f, openMid:%d, openStart:%d, openEnd:%d",
-				closestIndex,closestDistance, angleAdjustments,openAreaMid,biggestOpenAreaStart,biggestOpenAreaEnd);
+	//ROS_ERROR("Closest lidar index:%d, distance:%f, adjusting:%f, openMid:%d, openStart:%d, openEnd:%d",
+	//			closestIndex,closestDistance, angleAdjustments,openAreaMid,biggestOpenAreaStart,biggestOpenAreaEnd);
 
 	return twistOut;
 }
@@ -434,6 +509,11 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 		return 0;
 	}
 
+	char reversing = 0;
+	if(signal.linear.x < 0){
+		reversing = 1;
+	}
+
 	tf::Quaternion poseQuaternion = tf::Quaternion(lastOdom.pose.pose.orientation.x,
 								lastOdom.pose.pose.orientation.y,
 								lastOdom.pose.pose.orientation.z,
@@ -441,28 +521,14 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 	tf::Matrix3x3 m(poseQuaternion);
 	double roll, pitch, yaw;
 	m.getRPY(roll, pitch, yaw);
-	
-	float collisionThreshold = 0.22 + lastOdom.twist.twist.linear.x;
-	float collisionNearThreshold = 0.14;
-	float angleWidth = 0.4f;
-	float angleWidthNear = PI/1.8f;
 
 	float angleCenter = 0;
 	float angleCenterNear = (PI/2.0);
-	if(!reverse){
+	if(!reversing){
 		angleCenter = (PI/2.0)-calcAngleCenterModifier(signal.angular.z, signal.linear.x);
 	}else{
 		angleCenterNear = (-PI/2.0);
 		angleCenter = (-PI/2.0)-calcAngleCenterModifier(signal.angular.z, -signal.linear.x);
-	}
-
-	if(signal.angular.z > 0.01f){
-		angleCenterNear+=0.25f;
-		angleWidthNear -= 0.5f;
-	}
-	if(signal.angular.z < -0.01f){
-		angleCenterNear-=0.25f;
-		angleWidthNear -= 0.5f;
 	}
 
 	ROS_ERROR("camDist: %f, camBatDist: %f, angleCenter: %f, angularZ: %f", camDist, camBatDist, angleCenter, signal.angular.z);
@@ -473,8 +539,11 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 		return 1;
 	}
 	
-	
-	if(reverse){
+	float collisionThreshold = 0.22 + lastOdom.twist.twist.linear.x;
+	float collisionNearThreshold = 0.14;
+	float angleWidth = 0.4f;
+	float angleWidthNear = PI/1.8f;
+	if(reversing){
 		collisionThreshold = 0.25 - lastOdom.twist.twist.linear.x;
 		collisionNearThreshold = 0.20;
 		angleWidth = 0.4f;
@@ -493,6 +562,7 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 
 	//ROS_ERROR("Checking for collision: angleCenter:%f", angleCenter);
 	char collisionFlag = 0;
+	collidingNear = 0;
 	for(int i = 0; i < 360; i+=2){
 		geometry_msgs::Point32 pointInCloud = lastPointCloud.points[i];
 		if(std::isnan(pointInCloud.x) || std::isnan(pointInCloud.y)){
@@ -523,8 +593,9 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 		}if((angleFromBaseNear < angleWidthNear && angleFromBaseNear > -angleWidthNear)){
 			if(distance < collisionNearThreshold){
 				ROS_INFO("Angle: %f",angleFromBase);
-				ROS_ERROR("Colliding, angleFromBase:%f", angleFromBase);
+				ROS_ERROR("Colliding hard, angleFromBase:%f", angleFromBase);
 				collisionFlag = 1;
+				collidingNear = 1;
 			}
 			geometry_msgs::Point p;
 			p.x = 0;
@@ -539,7 +610,6 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 	
 	return collisionFlag;
 }
-
 void moveTowardsPose(const nav_msgs::Odometry& currentOdom, const geometry_msgs::PoseStamped& targetPose){	
 	
 	geometry_msgs::Twist signal = calculateTwist(currentOdom, targetPose);
@@ -547,8 +617,11 @@ void moveTowardsPose(const nav_msgs::Odometry& currentOdom, const geometry_msgs:
 		ROS_INFO("Collision detected!");
 		signal.linear.x = 0;
 		signal.angular.z = 0;
-	}		
-
+	}
+	
+	if(collidingNear){
+		signal = escapeCloseWalls();
+	}
 	sendMotorSignal(signal);
 }
 
