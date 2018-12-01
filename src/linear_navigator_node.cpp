@@ -439,8 +439,6 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 		reversing = 1;
 	}
 
-	float angleWidth = 0.3927f; //std::max(0.3927 + abs(lastOdom.twist.twist.angular.z),0.5); //0.3927 ~ 45 degrees
-
 	tf::Quaternion poseQuaternion = tf::Quaternion(lastOdom.pose.pose.orientation.x,
 								lastOdom.pose.pose.orientation.y,
 								lastOdom.pose.pose.orientation.z,
@@ -450,9 +448,11 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 	m.getRPY(roll, pitch, yaw);
 
 	float angleCenter = 0;
+	float angleCenterNear = (PI/2.0);
 	if(!reversing){
 		angleCenter = (PI/2.0)-calcAngleCenterModifier(signal.angular.z, signal.linear.x);
 	}else{
+		angleCenterNear = (-PI/2.0);
 		angleCenter = (-PI/2.0)-calcAngleCenterModifier(signal.angular.z, -signal.linear.x);
 	}
 
@@ -464,9 +464,15 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 		return 1;
 	}
 	
-	float collisionThreshold = 0.15 + 2*signal.linear.x;
+	float collisionThreshold = 0.22 + 2*signal.linear.x;
+	float collisionNearThreshold = 0.14;
+	float angleWidth = 0.4f;
+	float angleWidthNear = PI/1.8f;
 	if(reversing){
 		collisionThreshold = 0.25 - 2*signal.linear.x;
+		collisionNearThreshold = 0.20;
+		angleWidth = 0.4f;
+		angleWidthNear = 0.46f;
 	}
 	
 	visualization_msgs::Marker line_list;
@@ -478,7 +484,7 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 	line_list.scale.x = 0.01;
 	line_list.header.stamp = ros::Time::now();
 	line_list.header.frame_id = "base_link";
-	
+
 	//ROS_ERROR("Checking for collision: angleCenter:%f", angleCenter);
 	char collisionFlag = 0;
 	for(int i = 0; i < 360; i+=2){
@@ -492,6 +498,7 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 
 		float angleToPoint = atan2(point_tf.x(), point_tf.y());
 		float angleFromBase = capAngle(angleToPoint-angleCenter);
+		float angleFromBaseNear = capAngle(angleToPoint-angleCenterNear);
 		float distance = sqrt(pow(point_tf.x(),2)+pow(point_tf.y(),2));
 
 		if(angleFromBase < angleWidth && angleFromBase > -angleWidth){
@@ -506,6 +513,19 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 			line_list.points.push_back(p);
 			p.x = (collisionThreshold)*cos(-(angleToPoint-1.5708));
 			p.y = (collisionThreshold)*sin(-(angleToPoint-1.5708));
+			line_list.points.push_back(p);
+		}if((angleFromBaseNear < angleWidthNear && angleFromBaseNear > -angleWidthNear)){
+			if(distance < collisionNearThreshold){
+				ROS_INFO("Angle: %f",angleFromBase);
+				ROS_ERROR("Colliding, angleFromBase:%f", angleFromBase);
+				collisionFlag = 1;
+			}
+			geometry_msgs::Point p;
+			p.x = 0;
+			p.y = 0;
+			line_list.points.push_back(p);
+			p.x = (collisionNearThreshold)*cos(-(angleToPoint-1.5708));
+			p.y = (collisionNearThreshold)*sin(-(angleToPoint-1.5708));
 			line_list.points.push_back(p);
 		}	 
 	}
