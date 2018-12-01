@@ -42,6 +42,7 @@ ros::Publisher fovVisualisationPublisher;
 char collisionCourseDetected = 1;
 char isInside = 0;
 char isInsideAngular = 0;
+char reverse = 0;
 
 char checkCollisionCourse(geometry_msgs::Twist, sensor_msgs::PointCloud, nav_msgs::Odometry, float, float);
 
@@ -352,9 +353,9 @@ geometry_msgs::Twist calculateTwist(const nav_msgs::Odometry& currentOdom, const
 	m_t_w.getRPY(roll_t_w, pitch_t_w, yaw_t_w);
 
 	targetQuaternion = tf::Quaternion(targetPose.pose.orientation.x,
-													targetPose.pose.orientation.y,
-													targetPose.pose.orientation.z,
-													targetPose.pose.orientation.w);
+					targetPose.pose.orientation.y,
+					targetPose.pose.orientation.z,
+					targetPose.pose.orientation.w);
 	tf::Matrix3x3 m_t(targetQuaternion);
 	double roll_t, pitch_t, yaw_t;
 	m_t.getRPY(roll_t, pitch_t, yaw_t);
@@ -363,10 +364,16 @@ geometry_msgs::Twist calculateTwist(const nav_msgs::Odometry& currentOdom, const
 	float deltaAnglePosition = capAngle(yaw - atan2(deltaY, deltaX));
 	float deltaAnglePose = capAngle(yaw_t-yaw);
 	char reverse = 0;
-	if(deltaAnglePosition < -1.57 || deltaAnglePosition > 1.57){
-		if(deltaAnglePose < 1.57 && deltaAnglePose > -1.57){
+	if((!reverse && (deltaAnglePosition < -1.57 || deltaAnglePosition > 1.57))
+	   || (reverse && ((deltaAnglePosition < -1.67 || deltaAnglePosition > 1.67)))){
+		if((!reverse && (deltaAnglePose < -1.57 || deltaAnglePose > 1.57))
+	  	 || (reverse && ((deltaAnglePose < -1.67 || deltaAnglePose > 1.67)))){
 			reverse = 1;
+		}else{
+			reverse = 0;
 		}
+	}else{
+		reverse = 0;
 	}
 	
 	if((!isInside && distance > 0.10) || (isInside && distance > 0.50)){
