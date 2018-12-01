@@ -139,13 +139,13 @@ void obstacleWallsCallback(const sensor_msgs::PointCloud& msg){
 		gotPointCloud = 1;
 	}	
 
-	collisionCourseDetected = checkCollisionCourse(*last_signal_ptr, *lastPointCloud_ptr, *lastOdom_ptr, obstDist, obstBatDist);
+	/*collisionCourseDetected = checkCollisionCourse(*last_signal_ptr, *lastPointCloud_ptr, *lastOdom_ptr, obstDist, obstBatDist);
 	if(collisionCourseDetected){
 		geometry_msgs::Twist signal;
 		signal.linear.x = 0;
 		signal.angular.z = 0;
 		sendMotorSignal(signal);
-	}
+	}*/
 }
 
 /*
@@ -441,11 +441,11 @@ geometry_msgs::Twist calculateTwist(const nav_msgs::Odometry& currentOdom, const
 	
 	float deltaAnglePosition = capAngle(yaw - atan2(deltaY, deltaX));
 	float deltaAnglePose = capAngle(yaw_t-yaw);
-	char reverse = 0;
-	if((!reverse && (deltaAnglePosition < -1.57 || deltaAnglePosition > 1.57))
+	
+	if((!reverse && (deltaAnglePosition < -1.87 || deltaAnglePosition > 1.87))
 	   || (reverse && ((deltaAnglePosition < -1.67 || deltaAnglePosition > 1.67)))){
-		if((!reverse && (deltaAnglePose > -1.57 || deltaAnglePose < 1.57))
-	  	 || (reverse && ((deltaAnglePose > -1.67 || deltaAnglePose < 1.67)))){
+		if((!reverse && (deltaAnglePose > -1.27 || deltaAnglePose < 1.27))
+	  	 || (reverse && ((deltaAnglePose > -1.47 || deltaAnglePose < 1.47)))){
 			reverse = 1;
 		}else{
 			reverse = 0;
@@ -507,11 +507,6 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 		return 0;
 	}
 
-	char reversing = 0;
-	if(signal.linear.x < 0){
-		reversing = 1;
-	}
-
 	tf::Quaternion poseQuaternion = tf::Quaternion(lastOdom.pose.pose.orientation.x,
 								lastOdom.pose.pose.orientation.y,
 								lastOdom.pose.pose.orientation.z,
@@ -519,14 +514,28 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 	tf::Matrix3x3 m(poseQuaternion);
 	double roll, pitch, yaw;
 	m.getRPY(roll, pitch, yaw);
+	
+	float collisionThreshold = 0.22 + lastOdom.twist.twist.linear.x;
+	float collisionNearThreshold = 0.14;
+	float angleWidth = 0.4f;
+	float angleWidthNear = PI/1.8f;
 
 	float angleCenter = 0;
 	float angleCenterNear = (PI/2.0);
-	if(!reversing){
+	if(!reverse){
 		angleCenter = (PI/2.0)-calcAngleCenterModifier(signal.angular.z, signal.linear.x);
 	}else{
 		angleCenterNear = (-PI/2.0);
 		angleCenter = (-PI/2.0)-calcAngleCenterModifier(signal.angular.z, -signal.linear.x);
+	}
+
+	if(signal.angular.z > 0.01f){
+		angleCenterNear+=0.25f;
+		angleWidthNear -= 0.5f;
+	}
+	if(signal.angular.z < -0.01f){
+		angleCenterNear-=0.25f;
+		angleWidthNear -= 0.5f;
 	}
 
 	ROS_ERROR("camDist: %f, camBatDist: %f, angleCenter: %f, angularZ: %f", camDist, camBatDist, angleCenter, signal.angular.z);
@@ -537,12 +546,9 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 		return 1;
 	}
 	
-	float collisionThreshold = 0.22 + 2*signal.linear.x;
-	float collisionNearThreshold = 0.14;
-	float angleWidth = 0.4f;
-	float angleWidthNear = PI/1.8f;
-	if(reversing){
-		collisionThreshold = 0.25 - 2*signal.linear.x;
+	
+	if(reverse){
+		collisionThreshold = 0.25 - lastOdom.twist.twist.linear.x;
 		collisionNearThreshold = 0.20;
 		angleWidth = 0.4f;
 		angleWidthNear = 0.46f;
@@ -667,7 +673,8 @@ int main(int argc, char **argv){
     ros::Rate loop_rate(10);
 
     while(ros::ok()){
-		if(gotOdom && gotTarget){
+		if(gotOdom && gotTarget && 
+	targetPose_ptr->pose.position.x > 0 && targetPose_ptr->pose.position.y > 0){
 			moveTowardsPose(*lastOdom_ptr, *targetPose_ptr);
 		}
         ros::spinOnce();
