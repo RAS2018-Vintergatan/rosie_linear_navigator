@@ -367,7 +367,7 @@ geometry_msgs::Twist adjustForCollisionAvoidance(geometry_msgs::Twist twistIn){
 		
 		float distance = sqrt(pow(pointInCloud.x, 2)+pow(pointInCloud.y,2));
 
-		char is_open = ((distance>0.30f)||(isnan(distance)))?1:0;
+		char is_open = ((distance>0.2f)||(isnan(distance)))?1:0;
 
 		if(!was_open && is_open){
 			currentOpenAreaStart = i;
@@ -393,7 +393,7 @@ geometry_msgs::Twist adjustForCollisionAvoidance(geometry_msgs::Twist twistIn){
 
 	float angleAdjustments = capAngle(((float)openAreaMid)*(TWO_PI)/360.0f);
 
-	twistOut.angular.z += std::min(angleAdjustments/6, 0.3f); //This could be changed
+	twistOut.angular.z += std::min(angleAdjustments/6, 0.35f); //This could be changed
 
 	//ROS_ERROR("Closest lidar index:%d, distance:%f, adjusting:%f, openMid:%d, openStart:%d, openEnd:%d",
 	//			closestIndex,closestDistance, angleAdjustments,openAreaMid,biggestOpenAreaStart,biggestOpenAreaEnd);
@@ -443,23 +443,25 @@ geometry_msgs::Twist calculateTwist(const nav_msgs::Odometry& currentOdom, const
 	
 	float deltaAnglePosition = capAngle(yaw - atan2(deltaY, deltaX));
 	float deltaAnglePose = capAngle(yaw_t-yaw);
-	
-	if((!reverse && (deltaAnglePosition < -1.87 || deltaAnglePosition > 1.87))
-	   || (reverse && ((deltaAnglePosition < -1.67 || deltaAnglePosition > 1.67)))){
-		if((!reverse && (deltaAnglePose > -1.27 || deltaAnglePose < 1.27))
-	  	 || (reverse && ((deltaAnglePose > -1.47 || deltaAnglePose < 1.47)))){
-			reverse = 1;
+
+	char reverse_now = 0;	
+
+	if((!reverse && (deltaAnglePosition < -PI/2-0.1f || deltaAnglePosition > PI/2+0.1f))
+	   || (reverse && ((deltaAnglePosition < -PI/2 || deltaAnglePosition > PI/2)))){
+		if((!reverse && (deltaAnglePose > -PI/2  + 0.2f && deltaAnglePose < PI/2 - 0.2f))
+	  	 || (reverse && (deltaAnglePose > -PI/2 && deltaAnglePose < PI/2))){
+			reverse_now = 1;
 		}else{
-			reverse = 0;
+			reverse_now = 0;
 		}
 	}else{
-		reverse = 0;
+		reverse_now = 0;
 	}
 	
 	if((!isInside && distance > positionLowerThreshold) || (isInside && distance > positionUpperThreshold)){
 		isInside = 0;
 		float velByDistance = std::min(std::max(distance*5,0.02f),0.03f);
-		if(reverse){
+		if(reverse_now){
 			deltaAnglePosition = capAngle(deltaAnglePosition+PI);
 			if(std::abs(deltaAnglePosition)>1.2f){
 				twistOut.angular.z = -std::min(std::max(deltaAnglePosition*0.3f,-0.2f),0.2f);
@@ -485,7 +487,7 @@ geometry_msgs::Twist calculateTwist(const nav_msgs::Odometry& currentOdom, const
 		twistOut.linear.x = 0.0;
 		if((!isInsideAngular && std::abs(deltaAnglePose)>angularLowerThreshold) || (isInsideAngular && std::abs(deltaAnglePose)>angularUpperThreshold)){
 			isInsideAngular = 0;
-			twistOut.angular.z = std::min(std::max(deltaAnglePose*0.3f,-0.2f),0.2f);
+			twistOut.angular.z = std::min(std::max(deltaAnglePose*0.2f,-0.1f),0.1f);
 		}else{
 			isInsideAngular = 1;
 			twistOut.angular.z = 0.0f;
@@ -539,8 +541,8 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 		return 1;
 	}
 	
-	float collisionThreshold = 0.22 + lastOdom.twist.twist.linear.x;
-	float collisionNearThreshold = 0.14;
+	float collisionThreshold = 0.20 + lastOdom.twist.twist.linear.x;
+	float collisionNearThreshold = 0.18;
 	float angleWidth = 0.4f;
 	float angleWidthNear = PI/1.8f;
 	if(reversing){
