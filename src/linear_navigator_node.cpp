@@ -565,12 +565,12 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 	float collisionThreshold = 0.10 + lastOdom.twist.twist.linear.x*3 + angularSpeed/13;
 	float collisionNearThreshold = 0.18;
 	float angleWidth = 0.3f + angularSpeedSignal/12;
-	float angleWidthNear = 3.14f;
+	float angleWidthNear = 2.5f;
 	if(reversing){
 		collisionThreshold = 0.10 - lastOdom.twist.twist.linear.x*3 + angularSpeed/13;
 		collisionNearThreshold = 0.19;
 		angleWidth = 0.3f + angularSpeedSignal/12;
-		angleWidthNear = 3.14f;
+		angleWidthNear = 2.5f;
 	}
 	
 	visualization_msgs::Marker line_list;
