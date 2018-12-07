@@ -648,6 +648,7 @@ char checkCollisionCourse(geometry_msgs::Twist signal, sensor_msgs::PointCloud l
 void moveTowardsPose(const nav_msgs::Odometry& currentOdom, const geometry_msgs::PoseStamped& targetPose){	
 	
 	geometry_msgs::Twist signal = calculateTwist(currentOdom, targetPose);
+	/*	
 	if(checkCollisionCourse(signal, *lastPointCloud_ptr, *lastOdom_ptr, obstDist, obstBatDist)){
 		ROS_INFO("Collision detected!");
 		signal.linear.x = 0;
@@ -657,6 +658,7 @@ void moveTowardsPose(const nav_msgs::Odometry& currentOdom, const geometry_msgs:
 	if(collidingNear){
 		signal = escapeCloseWalls();
 	}
+	*/
 	sendMotorSignal(signal);
 }
 
